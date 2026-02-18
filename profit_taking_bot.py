@@ -17,10 +17,14 @@ import logging
 # CONFIGURATION - ADJUST THESE SETTINGS
 # ============================================================================
 
-PRIVATE_KEY = "0x5e79cadc71b17e7a7d11159cf2914a427abd3819faa0eaad1633bfe20508674b"  # Your wallet private key
+import os
+
+PRIVATE_KEY = os.environ.get("PRIVATE_KEY")
+if not PRIVATE_KEY:
+    raise ValueError("PRIVATE_KEY environment variable is not set")
 
 # Profit/Loss Thresholds
-TAKE_PROFIT_PCT = 15.0  # Sell if position is up 15% or more
+TAKE_PROFIT_PCT = 70.0  # Sell if position is up 50% or more
 STOP_LOSS_PCT = -10.0  # Sell if position is down 10% or more
 
 # Scan Settings
@@ -53,6 +57,48 @@ logger = logging.getLogger(__name__)
 account = Account.from_key(PRIVATE_KEY)
 WALLET_ADDRESS = account.address
 
+# ============================================================
+# Oxylabs residential proxy - MUST be set before any imports
+# that use httpx (including py_clob_client)
+# ============================================================
+PROXY_USER = "customer-aghasld_0TJnp-cc-nl"
+PROXY_PASS = "hp6OX1xa1w~guQj="
+PROXY_HOST = "pr.oxylabs.io:7777"
+PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}"
+
+import os
+os.environ["HTTP_PROXY"] = PROXY_URL
+os.environ["HTTPS_PROXY"] = PROXY_URL
+os.environ["http_proxy"] = PROXY_URL
+os.environ["https_proxy"] = PROXY_URL
+
+# Patch httpx BEFORE py_clob_client loads its helpers
+import httpx
+
+_orig_init = httpx.Client.__init__
+def _proxy_init(self, *args, **kwargs):
+    kwargs.setdefault("proxy", PROXY_URL)
+    _orig_init(self, *args, **kwargs)
+httpx.Client.__init__ = _proxy_init
+
+# Also patch the module-level helper that ClobClient uses internally
+try:
+    import py_clob_client.http_helpers.helpers as _clob_helpers
+    # Replace the shared client instance with a proxy-enabled one
+    _clob_helpers._http_client = httpx.Client(
+        proxy=PROXY_URL,
+        http2=True,
+        timeout=30
+    )
+    print("✅ ClobClient HTTP helper patched with proxy")
+except Exception as _e:
+    print(f"⚠️  Could not patch ClobClient helper: {_e}")
+
+# Proxied requests session for all other HTTP calls
+import requests as _requests
+_proxied_session = _requests.Session()
+_proxied_session.proxies = {"http": PROXY_URL, "https": PROXY_URL}
+
 # Initialize Polymarket client
 client = ClobClient(
     "https://clob.polymarket.com",
@@ -63,7 +109,7 @@ client = ClobClient(
 # Set API credentials
 client.set_api_creds(client.create_or_derive_api_creds())
 
-# Setup Web3
+# Setup Web3 with reliable public RPC
 w3 = Web3(Web3.HTTPProvider('https://rpc.ankr.com/polygon/e60a25f438f27fa6fc6a501b06f24aaed57b8f518096bc9d5666094a40a67fe7'))
 
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
@@ -94,6 +140,25 @@ def save_trades_log():
     """Save trades log to file"""
     with open(TRADES_LOG, 'w') as f:
         json.dump(trades_log, f, indent=2)
+
+
+def purge_bad_entry_prices():
+    """Remove cached entry prices that were recorded as current_price (i.e. 0% P&L at time of recording).
+    Forces re-fetch from API on next scan."""
+    purged = 0
+    to_delete = []
+    for token_id, purchase in trades_log.get("purchases", {}).items():
+        # If entry was recorded with no source field, it was assumed (not from API)
+        if not purchase.get("source"):
+            to_delete.append(token_id)
+            purged += 1
+
+    for token_id in to_delete:
+        del trades_log["purchases"][token_id]
+
+    if purged > 0:
+        logger.info(f"   🧹 Purged {purged} assumed entry prices — will re-fetch from API")
+        save_trades_log()
 
 
 def record_purchase(token_id, price, shares):
@@ -186,8 +251,6 @@ def get_all_positions():
     try:
         logger.info("   Querying Polygonscan for token transfers...")
 
-        import requests
-
         params = {
             "module": "account",
             "action": "token1155tx",
@@ -199,7 +262,7 @@ def get_all_positions():
             "apikey": "YourApiKeyToken"
         }
 
-        response = requests.get(
+        response = _proxied_session.get(
             "https://api.polygonscan.com/api",
             params=params,
             timeout=10
@@ -228,8 +291,7 @@ def get_all_positions():
 
     # Method 3b: Polymarket Data API - most reliable direct source
     try:
-        import requests as req
-        r = req.get(
+        r = _proxied_session.get(
             "https://data-api.polymarket.com/positions",
             params={"user": WALLET_ADDRESS, "limit": 500},
             timeout=10
@@ -239,14 +301,20 @@ def get_all_positions():
             positions_list = data if isinstance(data, list) else data.get('positions', data.get('data', []))
             before = len(token_ids)
             for pos in positions_list:
-                tid = pos.get('asset') or pos.get('token_id') or pos.get('tokenId')
-                size = float(pos.get('size', pos.get('amount', pos.get('shares', 0))) or 0)
-                if tid and size > 0.01:
+                tid = (pos.get('asset') or pos.get('asset_id') or
+                       pos.get('token_id') or pos.get('tokenId') or
+                       pos.get('conditionId') or pos.get('id'))
+                size = float(pos.get('size', pos.get('amount', pos.get('shares', pos.get('currentValue', 0)))) or 0)
+                if tid and size > 0.001:
                     token_ids.add(str(tid))
             added = len(token_ids) - before
-            logger.info(f"   ✅ Data API added {added} tokens - total: {len(token_ids)}")
+            logger.info(f"   ✅ Data API: {len(positions_list)} positions, {added} new tokens (total: {len(token_ids)})")
+            if len(positions_list) > 0 and added == 0:
+                logger.info(f"   🔍 Data API sample fields: {list(positions_list[0].keys())}")
+        else:
+            logger.warning(f"   ⚠️  Data API HTTP {r.status_code}")
     except Exception as e:
-        logger.debug(f"   Data API skipped: {e}")
+        logger.warning(f"   ⚠️  Data API failed: {e}")
 
     # Method 4: Try direct blockchain scanning with small range
     try:
@@ -304,8 +372,9 @@ def get_all_positions():
     # Check balances
     positions = []
 
-    # Filter out resolved markets first
-    active_tokens = [t for t in token_ids if t not in trades_log.get("resolved_markets", [])]
+    # Filter out resolved markets
+    resolved = trades_log.get("resolved_markets", [])
+    active_tokens = [t for t in token_ids if t not in resolved]
 
     if len(active_tokens) < len(token_ids):
         skipped = len(token_ids) - len(active_tokens)
@@ -317,20 +386,46 @@ def get_all_positions():
         try:
             # First check blockchain balance - retry on rate limit
             balance = None
-            for attempt in range(3):
+            for attempt in range(5):
                 try:
                     balance = ctf_contract.functions.balanceOf(WALLET_ADDRESS, int(token_id)).call()
                     break
                 except Exception as re:
                     if 'rate limit' in str(re).lower() or '-32090' in str(re):
-                        time.sleep(2 + attempt * 2)
+                        wait = 3 + attempt * 3
+                        logger.debug(f"   Rate limit on {token_id[:20]}..., retry {attempt+1}/5 in {wait}s")
+                        time.sleep(wait)
                     else:
                         raise re
             if balance is None:
-                logger.debug(f"   Rate limit failed for {token_id[:20]}... after 3 attempts")
+                # Rate limit failed — assume non-zero if it was in our trades log
+                if token_id in [str(t.get("token_id","")) for t in []]:
+                    pass
+                logger.warning(f"   ⚠️  RPC failed for {token_id[:20]}... - using Data API size instead")
+                # Fall back to Data API size
+                try:
+                    r = _proxied_session.get(
+                        "https://data-api.polymarket.com/positions",
+                        params={"user": WALLET_ADDRESS, "limit": 500},
+                        timeout=10
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        positions_list = data if isinstance(data, list) else data.get("positions", data.get("data", []))
+                        for pos in positions_list:
+                            tid = (pos.get("asset") or pos.get("asset_id") or
+                                   pos.get("token_id") or pos.get("tokenId"))
+                            if str(tid) == str(token_id):
+                                size = float(pos.get("size", pos.get("amount", pos.get("shares", 0))) or 0)
+                                if size > 0.01:
+                                    positions.append({"token_id": token_id, "shares": size})
+                                    logger.info(f"   ✅ Found {size:.6f} shares in token {token_id[:20]}... (via Data API fallback)")
+                                break
+                except:
+                    pass
                 continue
             balance_decimal = balance / 1e6
-            time.sleep(0.15)  # 150ms between calls to stay under rate limit
+            time.sleep(1.5)  # 1.5s between calls - conservative to avoid rate limits
 
             if balance_decimal > 0.0001:
                 # Now check if we have open orders that lock these tokens
@@ -381,22 +476,80 @@ def get_market_price(token_id):
     except Exception as e:
         error_msg = str(e)
         if '404' in error_msg or 'No orderbook' in error_msg:
-            logger.info(f"   ⏭️  Market resolved - skipping (no orderbook)")
+            # Market resolved - return None silently
             return None
         else:
             logger.error(f"   Error getting price for {token_id[:20]}...: {e}")
             return None
 
 
+def fetch_entry_price_from_api(token_id):
+    """Fetch avg entry price for a SPECIFIC token from Polymarket trade history API"""
+    try:
+        # Try Gamma API first - most accurate per-token history
+        r = _proxied_session.get(
+            "https://data-api.polymarket.com/trades",
+            params={
+                "user": WALLET_ADDRESS,
+                "asset_id": token_id,   # filter by specific token
+                "limit": 500,
+                "side": "BUY"
+            },
+            timeout=10
+        )
+        if r.status_code == 200:
+            trades = r.json()
+            if isinstance(trades, dict):
+                trades = trades.get("data", trades.get("trades", []))
+
+            # Filter strictly to this token only
+            token_buys = [
+                t for t in trades
+                if str(t.get("asset_id", t.get("asset", t.get("tokenId", "")))) == str(token_id)
+                and t.get("side", "").upper() in ("BUY", "LONG", "")
+            ]
+
+            if token_buys:
+                total_cost = sum(
+                    float(t.get("price", 0)) * float(t.get("shares", t.get("size", t.get("amount", 0))))
+                    for t in token_buys
+                )
+                total_shares = sum(
+                    float(t.get("shares", t.get("size", t.get("amount", 0))))
+                    for t in token_buys
+                )
+                if total_shares > 0:
+                    avg_price = total_cost / total_shares
+                    logger.info(f"   📡 API entry price: ${avg_price:.4f} ({len(token_buys)} buys for this token)")
+                    return avg_price
+            else:
+                logger.debug(f"   No matching trades for token {token_id[:20]}... in API response ({len(trades)} total trades)")
+
+    except Exception as e:
+        logger.debug(f"   Could not fetch entry price from API: {e}")
+    return None
+
+
 def should_sell(token_id, current_price, shares):
     """Determine if position should be sold based on profit/loss"""
 
-    # Check if we have purchase data
+    # Check if we have purchase data locally
     if token_id not in trades_log["purchases"]:
-        logger.info(f"   ℹ️  No purchase record - assuming bought at current price")
-        # Record it now for future tracking
-        record_purchase(token_id, current_price, shares)
-        return False, 0.0, 0.0
+        # Try fetching from Polymarket API first
+        api_price = fetch_entry_price_from_api(token_id)
+        if api_price and api_price > 0:
+            logger.info(f"   ✅ Entry price fetched from API: ${api_price:.4f}")
+            trades_log["purchases"][token_id] = {
+                "buy_price": api_price,
+                "shares": shares,
+                "timestamp": datetime.now().isoformat(),
+                "source": "api"
+            }
+            save_trades_log()
+        else:
+            logger.info(f"   ℹ️  No entry price found - assuming bought at current price")
+            record_purchase(token_id, current_price, shares)
+            return False, 0.0, 0.0
 
     purchase = trades_log["purchases"][token_id]
     buy_price = purchase["buy_price"]
@@ -408,7 +561,7 @@ def should_sell(token_id, current_price, shares):
     pnl_pct = ((current_price - buy_price) / buy_price) * 100
 
     # Check thresholds
-    if pnl_pct >= TAKE_PROFIT_PCT:
+    if pnl_pct >= TAKE_PROFIT_PCT - 0.01:  # slight buffer for floating point
         logger.info(f"   🎯 TAKE PROFIT! {pnl_pct:.1f}% gain (target: {TAKE_PROFIT_PCT}%)")
         return True, pnl, pnl_pct
     elif pnl_pct <= STOP_LOSS_PCT:
@@ -427,6 +580,8 @@ def sell_position(token_id, shares, current_price, pnl, pnl_pct):
     logger.info(f"      Value: ${shares * current_price:.2f}")
 
     try:
+        # Round price to valid tick size (Polymarket requires 2 decimal places max)
+        current_price = round(current_price, 2)
         order = OrderArgs(
             token_id=token_id,
             price=current_price,
@@ -477,41 +632,43 @@ def scan_and_sell():
         token_id = pos['token_id']
         shares = pos['shares']
 
-        logger.info(f"Position {i}/{len(positions)}:")
-        logger.info(f"   Token: {token_id[:20]}...")
-        logger.info(f"   Shares: {shares:.6f}")
-
-        # Get current price
+        # Get current price first (before any logging)
         current_price = get_market_price(token_id)
 
         if current_price is None:
-            logger.info(f"   ⏭️  Skipping - market resolved or unavailable")
-
-            # Add to resolved markets list so we never check it again
+            # Resolved market - add to blacklist and skip silently
             if "resolved_markets" not in trades_log:
                 trades_log["resolved_markets"] = []
-
             if token_id not in trades_log["resolved_markets"]:
                 trades_log["resolved_markets"].append(token_id)
-                logger.info(f"   🧹 Added to resolved markets - will skip in future scans")
-
-            # Remove from purchases tracking
             if token_id in trades_log["purchases"]:
                 del trades_log["purchases"][token_id]
-
             save_trades_log()
             continue
 
         current_value = shares * current_price
+        
+        # Skip dust positions silently (before any logging)
+        if current_value < MIN_POSITION_VALUE:
+            continue
+
+        # Only log positions we're actually tracking
+        logger.info(f"")
+        logger.info(f"--- Position {held_count + 1} ---")
+        logger.info(f"   Token: {token_id[:20]}...")
+        logger.info(f"   Shares: {shares:.6f}")
         logger.info(f"   Current Price: ${current_price:.4f}")
         logger.info(f"   Current Value: ${current_value:.2f}")
 
-        if current_value < MIN_POSITION_VALUE:
-            logger.info(f"   ⏭️  Skipping - too small (< ${MIN_POSITION_VALUE})")
-            continue
+        time.sleep(0.5)  # Small delay to prevent interleaved logs
 
         # Check if should sell
         should_sell_flag, pnl, pnl_pct = should_sell(token_id, current_price, shares)
+
+        # Log buy price for visibility
+        if token_id in trades_log["purchases"]:
+            buy_price = trades_log["purchases"][token_id]["buy_price"]
+            logger.info(f"   Entry Price:   ${buy_price:.4f} | P&L: {pnl_pct:+.1f}% (${pnl:+.2f})")
 
         if should_sell_flag:
             if sell_position(token_id, shares, current_price, pnl, pnl_pct):
@@ -536,11 +693,18 @@ def scan_and_sell():
 
 def main():
     """Main bot loop"""
+    # Purge resolved_markets completely on startup - let bot rediscover naturally
+    if "resolved_markets" in trades_log:
+        count = len(trades_log["resolved_markets"])
+        trades_log["resolved_markets"] = []
+        save_trades_log()
+        logger.info(f"   🧹 Cleared {count} entries from resolved_markets blacklist on startup")
     logger.info("")
     logger.info("=" * 70)
     logger.info("🤖 POLYMARKET PROFIT-TAKING BOT")
     logger.info("=" * 70)
     logger.info(f"Wallet: {WALLET_ADDRESS}")
+    purge_bad_entry_prices()
     logger.info(f"Take Profit: +{TAKE_PROFIT_PCT}%")
     logger.info(f"Stop Loss: {STOP_LOSS_PCT}%")
     logger.info(f"Scan Interval: {SCAN_INTERVAL_SECONDS}s ({SCAN_INTERVAL_SECONDS // 60} minutes)")
