@@ -64,7 +64,7 @@ client = ClobClient(
 client.set_api_creds(client.create_or_derive_api_creds())
 
 # Setup Web3
-w3 = Web3(Web3.HTTPProvider('https://polygon-rpc.com'))
+w3 = Web3(Web3.HTTPProvider('https://rpc.ankr.com/polygon/e60a25f438f27fa6fc6a501b06f24aaed57b8f518096bc9d5666094a40a67fe7'))
 
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 CTF_ABI = [{
