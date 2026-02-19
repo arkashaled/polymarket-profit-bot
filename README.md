@@ -437,7 +437,6 @@ Pull requests welcome! For major changes, please open an issue first.
 
 - Issues: [GitHub Issues](https://github.com/arkashaled/polymarket-profit-bot/issues)
 - Polymarket Docs: [docs.polymarket.com](https://docs.polymarket.com)
-- Oxylabs Support: [oxylabs.io/support](https://oxylabs.io/support)
 
 ---
 
