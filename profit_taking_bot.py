@@ -25,7 +25,7 @@ if not PRIVATE_KEY:
 
 # Profit/Loss Thresholds
 TAKE_PROFIT_PCT = 70.0  # Sell if position is up 50% or more
-STOP_LOSS_PCT = -10  # Sell if position is down 10% or more
+STOP_LOSS_PCT = -10.0  # Sell if position is down 10% or more
 
 # Scan Settings
 SCAN_INTERVAL_SECONDS = 600  # 10 minutes (600 seconds)
