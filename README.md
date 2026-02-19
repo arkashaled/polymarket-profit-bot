@@ -36,52 +36,159 @@ This system consists of two coordinated bots:
 - **Geo-Bypass**: Residential proxy routing
 - **Clean Logging**: Only active positions displayed
 
-## 🚀 Quick Start
+## 🚀 Getting Started
 
 ### Prerequisites
 
-- Python 3.11+
-- OpenAI API key (for GPT-4o)
-- Oxylabs residential proxy account
-- Polymarket wallet with private key
-- USDC on Polygon network
+Before you begin, you'll need:
 
-### Installation
+- **Python 3.11+** installed on your machine
+- **OpenAI API key** (for GPT-4o) - Get one at [platform.openai.com](https://platform.openai.com)
+- **Oxylabs residential proxy account** - Sign up at [oxylabs.io](https://oxylabs.io)
+- **Polymarket wallet** with:
+  - Private key exported from MetaMask
+  - At least $50 USDC on Polygon network
+  - Approved CTF Exchange contract (we'll do this in setup)
+
+### Step 1: Clone and Install
 
 ```bash
-# Clone repository
+# Clone the repository
 git clone https://github.com/arkashaled/polymarket-profit-bot.git
 cd polymarket-profit-bot
 
-# Install dependencies
+# Install Python dependencies
 pip install -r requirements.txt
-
-# Configure credentials in both scripts:
-# Autonomous_bot.py:
-# - PRIVATE_KEY (wallet private key)
-# - OPENAI_API_KEY (for GPT-4o analysis)
-# 
-# profit_taking_bot.py:
-# - PRIVATE_KEY (same wallet)
-# - PROXY credentials (Oxylabs)
-
-# Run both bots (recommended)
-python3 Autonomous_bot.py &
-python3 profit_taking_bot.py &
-
-# Or run individually
-python3 Autonomous_bot.py      # Trading bot only
-python3 profit_taking_bot.py   # Profit-taking only
 ```
 
-### Deploy to Railway
+### Step 2: Configure Credentials
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app)
+**Edit `Autonomous_bot.py`:**
+1. Open the file in your editor
+2. Find line ~20: `PRIVATE_KEY = "0x..."`
+3. Replace with your wallet's private key
+4. Find line ~30: `OPENAI_API_KEY = "sk-..."`
+5. Replace with your OpenAI API key
 
-1. Fork this repository
-2. Create new Railway project from GitHub
-3. Railway auto-detects `Dockerfile` and deploys
-4. Bot runs 24/7 with auto-restart on crashes
+**Edit `profit_taking_bot.py`:**
+1. Open the file in your editor
+2. Find line ~20: `PRIVATE_KEY = "0x..."`
+3. Replace with the same wallet private key
+4. Find lines ~60-62 (proxy credentials):
+   ```python
+   PROXY_USER = "customer-YOUR_USER-cc-nl"
+   PROXY_PASS = "YOUR_PASSWORD"
+   ```
+5. Replace with your Oxylabs credentials
+
+### Step 3: Approve USDC Spending
+
+The bots need permission to spend your USDC. Run this once:
+
+```bash
+python3 << 'EOF'
+from web3 import Web3
+from eth_account import Account
+
+PRIVATE_KEY = "YOUR_PRIVATE_KEY_HERE"  # Replace with your key
+w3 = Web3(Web3.HTTPProvider('https://polygon-rpc.com'))
+
+USDC = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+
+usdc_abi = [{"constant": False, "inputs": [{"name": "_spender", "type": "address"}, 
+             {"name": "_value", "type": "uint256"}], "name": "approve", 
+             "outputs": [{"name": "", "type": "bool"}], "type": "function"}]
+
+usdc = w3.eth.contract(address=USDC, abi=usdc_abi)
+account = Account.from_key(PRIVATE_KEY)
+
+tx = usdc.functions.approve(CTF_EXCHANGE, 2**256-1).build_transaction({
+    'from': account.address,
+    'gas': 100000,
+    'gasPrice': w3.eth.gas_price,
+    'nonce': w3.eth.get_transaction_count(account.address),
+})
+
+signed = account.sign_transaction(tx)
+tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+print(f"✅ Approval sent: https://polygonscan.com/tx/{tx_hash.hex()}")
+w3.eth.wait_for_transaction_receipt(tx_hash)
+print("✅ Done! Bots can now trade.")
+EOF
+```
+
+### Step 4: Run the Bots
+
+**Option A - Run Both Bots (Recommended):**
+
+```bash
+# Terminal 1 - Trading Bot
+python3 Autonomous_bot.py
+
+# Terminal 2 - Profit-Taking Bot
+python3 profit_taking_bot.py
+```
+
+**Option B - Run Trading Bot Only:**
+
+```bash
+python3 Autonomous_bot.py
+```
+
+**Option C - Run Profit-Taking Bot Only:**
+
+```bash
+python3 profit_taking_bot.py
+```
+
+The bots will run continuously until you press `Ctrl+C`.
+
+---
+
+## ☁️ Deploy to Railway (24/7 Cloud Hosting)
+
+To run the bots 24/7 without keeping your computer on:
+
+### Step 1: Push to Your GitHub
+
+```bash
+# Create a new private repository on GitHub
+# Then push your configured code:
+git init
+git add .
+git commit -m "initial commit"
+git branch -M main
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+git push -u origin main
+```
+
+### Step 2: Deploy on Railway
+
+1. Go to [railway.app](https://railway.app) and sign up
+2. Click **New Project** → **Deploy from GitHub repo**
+3. Select your repository
+4. Railway will auto-detect the `Dockerfile` and deploy
+
+### Step 3: Set Environment Variables
+
+In Railway dashboard:
+1. Go to your service → **Variables** tab
+2. Click **+ New Variable** and add:
+   - `PRIVATE_KEY` = `0x...` (your wallet key)
+   - `OPENAI_API_KEY` = `sk-...` (your OpenAI key)
+   - `PROXY_USER` = `customer-...` (your Oxylabs user)
+   - `PROXY_PASS` = `...` (your Oxylabs password)
+
+### Step 4: Verify Deployment
+
+1. Go to **Deployments** tab
+2. Wait for "Build successful" → "Deployed"
+3. Click **View Logs** to see bot output
+
+The bots will now run 24/7 with auto-restart on crashes.
+
+---
 
 ## ⚙️ Configuration
 
