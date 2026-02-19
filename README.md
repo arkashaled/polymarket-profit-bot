@@ -48,7 +48,7 @@ Before you begin, you'll need:
 - **Polymarket wallet** with:
   - Private key exported from MetaMask
   - At least $50 USDC on Polygon network
-  - Approved CTF Exchange contract (we'll do this in setup)
+  - Smart contract approvals (we'll set this up in Step 3 - only needs to be done once)
 
 ### Step 1: Clone and Install
 
@@ -65,25 +65,29 @@ pip install -r requirements.txt
 
 **Edit `Autonomous_bot.py`:**
 1. Open the file in your editor
-2. Find line ~20: `PRIVATE_KEY = "0x..."`
-3. Replace with your wallet's private key
-4. Find line ~30: `OPENAI_API_KEY = "sk-..."`
-5. Replace with your OpenAI API key
+2. Find line ~20: `PRIVATE_KEY = os.environ.get("PRIVATE_KEY")`
+3. Replace with: `PRIVATE_KEY = "0xYOUR_PRIVATE_KEY_HERE"`
+4. Find line ~30: `OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")`
+5. Replace with: `OPENAI_API_KEY = "sk-YOUR_OPENAI_KEY_HERE"`
 
 **Edit `profit_taking_bot.py`:**
 1. Open the file in your editor
-2. Find line ~20: `PRIVATE_KEY = "0x..."`
-3. Replace with the same wallet private key
+2. Find line ~20: `PRIVATE_KEY = os.environ.get("PRIVATE_KEY")`
+3. Replace with: `PRIVATE_KEY = "0xYOUR_PRIVATE_KEY_HERE"` (same as trading bot)
 4. Find lines ~60-62 (proxy credentials):
    ```python
-   PROXY_USER = "customer-YOUR_USER-cc-nl"
-   PROXY_PASS = "YOUR_PASSWORD"
+   PROXY_USER = os.environ.get("PROXY_USER", "customer-...")
+   PROXY_PASS = os.environ.get("PROXY_PASS", "...")
    ```
-5. Replace with your Oxylabs credentials
+5. Replace the default values with your Oxylabs credentials
 
-### Step 3: Approve USDC Spending
+**Note:** For production deployment, use environment variables instead of hardcoding keys (see Railway deployment section).
 
-The bots need permission to spend your USDC. Run this once:
+### Step 3: Approve Trading Contracts
+
+**CRITICAL:** The bots need permission to spend your USDC and move your tokens. Run these approvals once:
+
+**A) Approve USDC spending (for buying positions):**
 
 ```bash
 python3 << 'EOF'
@@ -94,7 +98,11 @@ PRIVATE_KEY = "YOUR_PRIVATE_KEY_HERE"  # Replace with your key
 w3 = Web3(Web3.HTTPProvider('https://polygon-rpc.com'))
 
 USDC = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+EXCHANGES = [
+    "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",  # CTF Exchange
+    "0xC5d563A36AE78145C45a50134d48A1215220f80a",  # Neg Risk CTF
+    "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",  # Neg Risk Adapter
+]
 
 usdc_abi = [{"constant": False, "inputs": [{"name": "_spender", "type": "address"}, 
              {"name": "_value", "type": "uint256"}], "name": "approve", 
@@ -103,20 +111,69 @@ usdc_abi = [{"constant": False, "inputs": [{"name": "_spender", "type": "address
 usdc = w3.eth.contract(address=USDC, abi=usdc_abi)
 account = Account.from_key(PRIVATE_KEY)
 
-tx = usdc.functions.approve(CTF_EXCHANGE, 2**256-1).build_transaction({
-    'from': account.address,
-    'gas': 100000,
-    'gasPrice': w3.eth.gas_price,
-    'nonce': w3.eth.get_transaction_count(account.address),
-})
+for exchange in EXCHANGES:
+    tx = usdc.functions.approve(exchange, 2**256-1).build_transaction({
+        'from': account.address,
+        'gas': 100000,
+        'gasPrice': w3.eth.gas_price,
+        'nonce': w3.eth.get_transaction_count(account.address),
+    })
+    
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    print(f"✅ USDC approval: https://polygonscan.com/tx/{tx_hash.hex()}")
+    
+    import time
+    time.sleep(10)  # Wait between transactions
 
-signed = account.sign_transaction(tx)
-tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-print(f"✅ Approval sent: https://polygonscan.com/tx/{tx_hash.hex()}")
-w3.eth.wait_for_transaction_receipt(tx_hash)
-print("✅ Done! Bots can now trade.")
+print("✅ USDC approvals complete!")
 EOF
 ```
+
+**B) Approve token transfers (for selling positions):**
+
+```bash
+python3 << 'EOF'
+from web3 import Web3
+from eth_account import Account
+
+PRIVATE_KEY = "YOUR_PRIVATE_KEY_HERE"  # Replace with your key
+w3 = Web3(Web3.HTTPProvider('https://polygon-rpc.com'))
+
+CTF_CONTRACT = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+EXCHANGES = [
+    "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",  # CTF Exchange
+    "0xC5d563A36AE78145C45a50134d48A1215220f80a",  # Neg Risk CTF
+]
+
+ctf_abi = [{"constant": False, "inputs": [{"name": "_operator", "type": "address"}, 
+            {"name": "_approved", "type": "bool"}], "name": "setApprovalForAll", 
+            "outputs": [], "type": "function"}]
+
+ctf = w3.eth.contract(address=CTF_CONTRACT, abi=ctf_abi)
+account = Account.from_key(PRIVATE_KEY)
+
+for exchange in EXCHANGES:
+    tx = ctf.functions.setApprovalForAll(exchange, True).build_transaction({
+        'from': account.address,
+        'gas': 100000,
+        'gasPrice': w3.eth.gas_price,
+        'nonce': w3.eth.get_transaction_count(account.address),
+    })
+    
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    print(f"✅ Token approval: https://polygonscan.com/tx/{tx_hash.hex()}")
+    
+    import time
+    time.sleep(10)  # Wait between transactions
+
+print("✅ Token approvals complete!")
+print("\n🎉 Setup complete! Both bots can now trade.")
+EOF
+```
+
+**Wait 1-2 minutes for all transactions to confirm on Polygon.**
 
 ### Step 4: Run the Bots
 
@@ -375,6 +432,16 @@ Total All-Time P&L: $+30.45
 
 ## 🛠️ Troubleshooting
 
+### "not enough balance / allowance" Error
+
+**Problem:** Bot fails with `PolyApiException: not enough balance / allowance`
+
+**Solution:** You need to approve both USDC spending AND token transfers. Run **both** approval scripts from Step 3:
+1. USDC approvals (3 exchanges) - enables buying
+2. Token approvals (2 exchanges) - enables selling
+
+Verify approvals succeeded on Polygonscan before trying again.
+
 ### 403 Geoblock Error
 - Your proxy country is blocked by Polymarket
 - Switch to an allowed country (see Proxy Configuration)
@@ -393,6 +460,11 @@ Total All-Time P&L: $+30.45
 - Oxylabs residential pool exhausted
 - Switch to different country
 - Check Oxylabs dashboard for bandwidth limits
+
+### Replacement Transaction Underpriced
+- Previous transaction still pending
+- Wait 15-30 seconds between approval transactions
+- Check Polygonscan for pending transactions
 
 ## 📊 File Structure
 
