@@ -24,7 +24,7 @@ if not PRIVATE_KEY:
     raise ValueError("PRIVATE_KEY environment variable is not set")
 
 # Profit/Loss Thresholds
-TAKE_PROFIT_PRICE = 0.95  # Sell if current price reaches $0.95 per share
+TAKE_PROFIT_PRICE = 0.99  # Sell if current price reaches $0.95 per share
 STOP_LOSS_PCT = -10.0  # Sell if position is down 10% or more
 
 # Scan Settings
