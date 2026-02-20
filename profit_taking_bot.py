@@ -24,11 +24,11 @@ if not PRIVATE_KEY:
     raise ValueError("PRIVATE_KEY environment variable is not set")
 
 # Profit/Loss Thresholds
-TAKE_PROFIT_PRICE = 0.75  # Sell if current price reaches $0.95 per share
+TAKE_PROFIT_PRICE = 0.95  # Sell if current price reaches $0.95 per share
 STOP_LOSS_PCT = -10.0  # Sell if position is down 10% or more
 
 # Scan Settings
-SCAN_INTERVAL_SECONDS = 600  # 10 minutes (600 seconds)
+SCAN_INTERVAL_SECONDS = 300  # 5 minutes (300 seconds)
 
 # Trading Settings
 MIN_POSITION_VALUE = 0.50  # Only sell positions worth at least $0.50
