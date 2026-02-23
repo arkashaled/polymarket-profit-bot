@@ -61,12 +61,16 @@ WALLET_ADDRESS = account.address
 # Oxylabs residential proxy - MUST be set before any imports
 # that use httpx (including py_clob_client)
 # ============================================================
+PROXY_USER = os.environ.get("PROXY_USER")
+PROXY_PASS = os.environ.get("PROXY_PASS")
+PROXY_HOST = os.environ.get("PROXY_HOST")
+PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}"  # ✅ Define FIRST
+
 import os
-os.environ["HTTP_PROXY"] = PROXY_URL
+os.environ["HTTP_PROXY"] = PROXY_URL  # ✅ Then use it
 os.environ["HTTPS_PROXY"] = PROXY_URL
 os.environ["http_proxy"] = PROXY_URL
 os.environ["https_proxy"] = PROXY_URL
-PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}"
 
 
 # Patch httpx BEFORE py_clob_client loads its helpers
