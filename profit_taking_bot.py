@@ -66,6 +66,8 @@ os.environ["HTTP_PROXY"] = PROXY_URL
 os.environ["HTTPS_PROXY"] = PROXY_URL
 os.environ["http_proxy"] = PROXY_URL
 os.environ["https_proxy"] = PROXY_URL
+PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}"
+
 
 # Patch httpx BEFORE py_clob_client loads its helpers
 import httpx
