@@ -63,11 +63,15 @@ WALLET_ADDRESS = account.address
 # ============================================================
 PROXY_USER = os.environ.get("PROXY_USER")
 PROXY_PASS = os.environ.get("PROXY_PASS")
-PROXY_HOST = os.environ.get("PROXY_HOST")
-PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}"  # ✅ Define FIRST
+PROXY_HOST = os.environ.get("PROXY_HOST", "pr.oxylabs.io:7777")
+
+if not PROXY_USER or not PROXY_PASS:
+    raise ValueError("PROXY_USER and PROXY_PASS environment variables must be set")
+
+PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}"
 
 import os
-os.environ["HTTP_PROXY"] = PROXY_URL  # ✅ Then use it
+os.environ["HTTP_PROXY"] = PROXY_URL
 os.environ["HTTPS_PROXY"] = PROXY_URL
 os.environ["http_proxy"] = PROXY_URL
 os.environ["https_proxy"] = PROXY_URL
