@@ -28,10 +28,10 @@ TAKE_PROFIT_PRICE = 0.99  # Sell if current price reaches $0.95 per share
 STOP_LOSS_PCT = -10.0  # Sell if position is down 10% or more
 
 # Scan Settings
-SCAN_INTERVAL_SECONDS = 120  # 2 minutes (120 seconds)
+SCAN_INTERVAL_SECONDS = 120  # 5 minutes (300 seconds)
 
 # Trading Settings
-MIN_POSITION_VALUE = 0.10  # Only sell positions worth at least $0.50
+MIN_POSITION_VALUE = 0.50  # Only sell positions worth at least $0.50
 
 # Logging
 LOG_FILE = "profit_taking_bot.log"
@@ -61,11 +61,6 @@ WALLET_ADDRESS = account.address
 # Oxylabs residential proxy - MUST be set before any imports
 # that use httpx (including py_clob_client)
 # ============================================================
-PROXY_USER = os.environ.get("PROXY_USER", "customer-aghasld_0TJnp-cc-nl")
-PROXY_PASS = os.environ.get("PROXY_PASS", "hp6OX1xa1w~guQj=")
-PROXY_HOST = os.environ.get("PROXY_HOST", "pr.oxylabs.io:7777")
-PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}"
-
 import os
 os.environ["HTTP_PROXY"] = PROXY_URL
 os.environ["HTTPS_PROXY"] = PROXY_URL
@@ -76,14 +71,19 @@ os.environ["https_proxy"] = PROXY_URL
 import httpx
 
 _orig_init = httpx.Client.__init__
+
+
 def _proxy_init(self, *args, **kwargs):
     kwargs.setdefault("proxy", PROXY_URL)
     _orig_init(self, *args, **kwargs)
+
+
 httpx.Client.__init__ = _proxy_init
 
 # Also patch the module-level helper that ClobClient uses internally
 try:
     import py_clob_client.http_helpers.helpers as _clob_helpers
+
     # Replace the shared client instance with a proxy-enabled one
     _clob_helpers._http_client = httpx.Client(
         proxy=PROXY_URL,
@@ -96,6 +96,7 @@ except Exception as _e:
 
 # Proxied requests session for all other HTTP calls
 import requests as _requests
+
 _proxied_session = _requests.Session()
 _proxied_session.proxies = {"http": PROXY_URL, "https": PROXY_URL}
 
@@ -110,7 +111,8 @@ client = ClobClient(
 client.set_api_creds(client.create_or_derive_api_creds())
 
 # Setup Web3 with reliable public RPC
-w3 = Web3(Web3.HTTPProvider('https://rpc.ankr.com/polygon/e60a25f438f27fa6fc6a501b06f24aaed57b8f518096bc9d5666094a40a67fe7'))
+w3 = Web3(
+    Web3.HTTPProvider('https://rpc.ankr.com/polygon/e60a25f438f27fa6fc6a501b06f24aaed57b8f518096bc9d5666094a40a67fe7'))
 
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 CTF_ABI = [{
@@ -393,13 +395,13 @@ def get_all_positions():
                 except Exception as re:
                     if 'rate limit' in str(re).lower() or '-32090' in str(re):
                         wait = 3 + attempt * 3
-                        logger.debug(f"   Rate limit on {token_id[:20]}..., retry {attempt+1}/5 in {wait}s")
+                        logger.debug(f"   Rate limit on {token_id[:20]}..., retry {attempt + 1}/5 in {wait}s")
                         time.sleep(wait)
                     else:
                         raise re
             if balance is None:
                 # Rate limit failed — assume non-zero if it was in our trades log
-                if token_id in [str(t.get("token_id","")) for t in []]:
+                if token_id in [str(t.get("token_id", "")) for t in []]:
                     pass
                 logger.warning(f"   ⚠️  RPC failed for {token_id[:20]}... - using Data API size instead")
                 # Fall back to Data API size
@@ -419,7 +421,8 @@ def get_all_positions():
                                 size = float(pos.get("size", pos.get("amount", pos.get("shares", 0))) or 0)
                                 if size > 0.01:
                                     positions.append({"token_id": token_id, "shares": size})
-                                    logger.info(f"   ✅ Found {size:.6f} shares in token {token_id[:20]}... (via Data API fallback)")
+                                    logger.info(
+                                        f"   ✅ Found {size:.6f} shares in token {token_id[:20]}... (via Data API fallback)")
                                 break
                 except:
                     pass
@@ -491,7 +494,7 @@ def fetch_entry_price_from_api(token_id):
             "https://data-api.polymarket.com/trades",
             params={
                 "user": WALLET_ADDRESS,
-                "asset_id": token_id,   # filter by specific token
+                "asset_id": token_id,  # filter by specific token
                 "limit": 500,
                 "side": "BUY"
             },
@@ -506,7 +509,7 @@ def fetch_entry_price_from_api(token_id):
             token_buys = [
                 t for t in trades
                 if str(t.get("asset_id", t.get("asset", t.get("tokenId", "")))) == str(token_id)
-                and t.get("side", "").upper() in ("BUY", "LONG", "")
+                   and t.get("side", "").upper() in ("BUY", "LONG", "")
             ]
 
             if token_buys:
@@ -523,7 +526,8 @@ def fetch_entry_price_from_api(token_id):
                     logger.info(f"   📡 API entry price: ${avg_price:.4f} ({len(token_buys)} buys for this token)")
                     return avg_price
             else:
-                logger.debug(f"   No matching trades for token {token_id[:20]}... in API response ({len(trades)} total trades)")
+                logger.debug(
+                    f"   No matching trades for token {token_id[:20]}... in API response ({len(trades)} total trades)")
 
     except Exception as e:
         logger.debug(f"   Could not fetch entry price from API: {e}")
@@ -647,7 +651,7 @@ def scan_and_sell():
             continue
 
         current_value = shares * current_price
-        
+
         # Skip dust positions silently (before any logging)
         if current_value < MIN_POSITION_VALUE:
             continue
