@@ -25,7 +25,7 @@ if not PRIVATE_KEY:
 
 # Profit/Loss Thresholds
 TAKE_PROFIT_PRICE = 0.99  # Sell if current price reaches $0.95 per share
-STOP_LOSS_PCT = -10.0  # Sell if position is down 10% or more
+STOP_LOSS_PCT = -20.0  # Sell if position is down 10% or more
 
 # Scan Settings
 SCAN_INTERVAL_SECONDS = 120  # 10 minutes (600 seconds)
