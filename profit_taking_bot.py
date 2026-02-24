@@ -28,10 +28,10 @@ TAKE_PROFIT_PRICE = 0.99  # Sell if current price reaches $0.95 per share
 STOP_LOSS_PCT = -10.0  # Sell if position is down 10% or more
 
 # Scan Settings
-SCAN_INTERVAL_SECONDS = 120  # 5 minutes (300 seconds)
+SCAN_INTERVAL_SECONDS = 120  # 10 minutes (600 seconds)
 
 # Trading Settings
-MIN_POSITION_VALUE = 0.50  # Only sell positions worth at least $0.50
+MIN_POSITION_VALUE = 0.10  # Only sell positions worth at least $0.50
 
 # Logging
 LOG_FILE = "profit_taking_bot.log"
@@ -76,24 +76,18 @@ os.environ["HTTPS_PROXY"] = PROXY_URL
 os.environ["http_proxy"] = PROXY_URL
 os.environ["https_proxy"] = PROXY_URL
 
-
 # Patch httpx BEFORE py_clob_client loads its helpers
 import httpx
 
 _orig_init = httpx.Client.__init__
-
-
 def _proxy_init(self, *args, **kwargs):
     kwargs.setdefault("proxy", PROXY_URL)
     _orig_init(self, *args, **kwargs)
-
-
 httpx.Client.__init__ = _proxy_init
 
 # Also patch the module-level helper that ClobClient uses internally
 try:
     import py_clob_client.http_helpers.helpers as _clob_helpers
-
     # Replace the shared client instance with a proxy-enabled one
     _clob_helpers._http_client = httpx.Client(
         proxy=PROXY_URL,
@@ -106,7 +100,6 @@ except Exception as _e:
 
 # Proxied requests session for all other HTTP calls
 import requests as _requests
-
 _proxied_session = _requests.Session()
 _proxied_session.proxies = {"http": PROXY_URL, "https": PROXY_URL}
 
@@ -121,8 +114,7 @@ client = ClobClient(
 client.set_api_creds(client.create_or_derive_api_creds())
 
 # Setup Web3 with reliable public RPC
-w3 = Web3(
-    Web3.HTTPProvider('https://rpc.ankr.com/polygon/e60a25f438f27fa6fc6a501b06f24aaed57b8f518096bc9d5666094a40a67fe7'))
+w3 = Web3(Web3.HTTPProvider('https://rpc.ankr.com/polygon/e60a25f438f27fa6fc6a501b06f24aaed57b8f518096bc9d5666094a40a67fe7'))
 
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 CTF_ABI = [{
@@ -143,8 +135,7 @@ except FileNotFoundError:
     trades_log = {
         "purchases": {},  # token_id: {price, shares, timestamp}
         "sales": [],
-        "total_profit": 0.0,
-        "resolved_markets": []  # List of resolved token IDs to skip
+        "total_profit": 0.0
     }
 
 
@@ -384,17 +375,9 @@ def get_all_positions():
     # Check balances
     positions = []
 
-    # Filter out resolved markets
-    resolved = trades_log.get("resolved_markets", [])
-    active_tokens = [t for t in token_ids if t not in resolved]
+    logger.info(f"   Checking balances for {len(token_ids)} tokens...")
 
-    if len(active_tokens) < len(token_ids):
-        skipped = len(token_ids) - len(active_tokens)
-        logger.info(f"   ⏭️  Skipped {skipped} resolved market(s)")
-
-    logger.info(f"   Checking balances for {len(active_tokens)} active tokens...")
-
-    for token_id in active_tokens:
+    for token_id in token_ids:
         try:
             # First check blockchain balance - retry on rate limit
             balance = None
@@ -405,13 +388,13 @@ def get_all_positions():
                 except Exception as re:
                     if 'rate limit' in str(re).lower() or '-32090' in str(re):
                         wait = 3 + attempt * 3
-                        logger.debug(f"   Rate limit on {token_id[:20]}..., retry {attempt + 1}/5 in {wait}s")
+                        logger.debug(f"   Rate limit on {token_id[:20]}..., retry {attempt+1}/5 in {wait}s")
                         time.sleep(wait)
                     else:
                         raise re
             if balance is None:
                 # Rate limit failed — assume non-zero if it was in our trades log
-                if token_id in [str(t.get("token_id", "")) for t in []]:
+                if token_id in [str(t.get("token_id","")) for t in []]:
                     pass
                 logger.warning(f"   ⚠️  RPC failed for {token_id[:20]}... - using Data API size instead")
                 # Fall back to Data API size
@@ -431,8 +414,7 @@ def get_all_positions():
                                 size = float(pos.get("size", pos.get("amount", pos.get("shares", 0))) or 0)
                                 if size > 0.01:
                                     positions.append({"token_id": token_id, "shares": size})
-                                    logger.info(
-                                        f"   ✅ Found {size:.6f} shares in token {token_id[:20]}... (via Data API fallback)")
+                                    logger.info(f"   ✅ Found {size:.6f} shares in token {token_id[:20]}... (via Data API fallback)")
                                 break
                 except:
                     pass
@@ -481,19 +463,35 @@ def get_all_positions():
     return positions
 
 
-def get_market_price(token_id):
-    """Get current market BID price for a token"""
-    try:
-        bid_data = client.get_price(token_id, "BUY")
-        return float(bid_data['price'])
-    except Exception as e:
-        error_msg = str(e)
-        if '404' in error_msg or 'No orderbook' in error_msg:
-            # Market resolved - return None silently
-            return None
-        else:
-            logger.error(f"   Error getting price for {token_id[:20]}...: {e}")
-            return None
+def get_market_price(token_id, retries=3):
+    """Get current market BID price for a token
+    Returns: (price, is_resolved)
+    - (float, False) if price found
+    - (None, True) if market is resolved (404)
+    - (None, False) if network error
+    """
+    for attempt in range(retries):
+        try:
+            bid_data = client.get_price(token_id, "BUY")
+            return float(bid_data['price']), False
+        except Exception as e:
+            error_msg = str(e)
+            if '404' in error_msg or 'No orderbook' in error_msg:
+                # Market resolved - signal to blacklist
+                return None, True
+            elif 'Request exception' in error_msg or 'timeout' in error_msg.lower():
+                # Network/proxy error - retry
+                if attempt < retries - 1:
+                    logger.debug(f"   Network error on {token_id[:20]}..., retry {attempt + 1}/{retries}")
+                    time.sleep(2)
+                    continue
+                else:
+                    logger.warning(f"   Network error after {retries} retries for {token_id[:20]}...")
+                    return None, False  # Network error, don't blacklist
+            else:
+                logger.error(f"   Error getting price for {token_id[:20]}...: {e}")
+                return None, False
+    return None, False
 
 
 def fetch_entry_price_from_api(token_id):
@@ -504,7 +502,7 @@ def fetch_entry_price_from_api(token_id):
             "https://data-api.polymarket.com/trades",
             params={
                 "user": WALLET_ADDRESS,
-                "asset_id": token_id,  # filter by specific token
+                "asset_id": token_id,   # filter by specific token
                 "limit": 500,
                 "side": "BUY"
             },
@@ -519,7 +517,7 @@ def fetch_entry_price_from_api(token_id):
             token_buys = [
                 t for t in trades
                 if str(t.get("asset_id", t.get("asset", t.get("tokenId", "")))) == str(token_id)
-                   and t.get("side", "").upper() in ("BUY", "LONG", "")
+                and t.get("side", "").upper() in ("BUY", "LONG", "")
             ]
 
             if token_buys:
@@ -536,8 +534,7 @@ def fetch_entry_price_from_api(token_id):
                     logger.info(f"   📡 API entry price: ${avg_price:.4f} ({len(token_buys)} buys for this token)")
                     return avg_price
             else:
-                logger.debug(
-                    f"   No matching trades for token {token_id[:20]}... in API response ({len(trades)} total trades)")
+                logger.debug(f"   No matching trades for token {token_id[:20]}... in API response ({len(trades)} total trades)")
 
     except Exception as e:
         logger.debug(f"   Could not fetch entry price from API: {e}")
@@ -647,21 +644,14 @@ def scan_and_sell():
         shares = pos['shares']
 
         # Get current price first (before any logging)
-        current_price = get_market_price(token_id)
+        current_price, is_resolved = get_market_price(token_id)
 
         if current_price is None:
-            # Resolved market - add to blacklist and skip silently
-            if "resolved_markets" not in trades_log:
-                trades_log["resolved_markets"] = []
-            if token_id not in trades_log["resolved_markets"]:
-                trades_log["resolved_markets"].append(token_id)
-            if token_id in trades_log["purchases"]:
-                del trades_log["purchases"][token_id]
-            save_trades_log()
+            # Skip resolved or network errors - will retry next scan
             continue
 
         current_value = shares * current_price
-
+        
         # Skip dust positions silently (before any logging)
         if current_value < MIN_POSITION_VALUE:
             continue
@@ -707,12 +697,6 @@ def scan_and_sell():
 
 def main():
     """Main bot loop"""
-    # Purge resolved_markets completely on startup - let bot rediscover naturally
-    if "resolved_markets" in trades_log:
-        count = len(trades_log["resolved_markets"])
-        trades_log["resolved_markets"] = []
-        save_trades_log()
-        logger.info(f"   🧹 Cleared {count} entries from resolved_markets blacklist on startup")
     logger.info("")
     logger.info("=" * 70)
     logger.info("🤖 POLYMARKET PROFIT-TAKING BOT")
